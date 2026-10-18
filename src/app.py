@@ -5,12 +5,22 @@ from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 from src.clean import clean_dataframe
 
+import io
+import uuid
+from pathlib import Path
+
+from fastapi import File, HTTPException, UploadFile
+from PIL import Image, UnidentifiedImageError
+
+from typing import Annotated
+from fastapi.openapi.utils import get_openapi
+
+
 df = clean_dataframe(
     pd.read_csv("data/cars.csv")
 )
 
 from src.predict import predict_price
-
 
 
 app = FastAPI()
@@ -81,3 +91,139 @@ def get_options():
             df["transmission_type"].dropna().unique().tolist()
         ),
     }
+
+
+# ---------- VEHICLE INSPECTION IMAGE UPLOAD ----------
+
+INSPECTION_DIR = Path("data/inspections")
+INSPECTION_DIR.mkdir(parents=True, exist_ok=True)
+
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB per image
+MAX_IMAGES = 10
+
+
+@app.post("/inspection/upload")
+async def upload_inspection_images(
+    files: Annotated[list[UploadFile], File()]
+):
+    if not files:
+        raise HTTPException(
+            status_code=400,
+            detail="Upload at least one JPEG image."
+        )
+
+    if len(files) > MAX_IMAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Maximum {MAX_IMAGES} images per inspection."
+        )
+
+    inspection_id = f"INS-{uuid.uuid4().hex[:10].upper()}"
+    inspection_path = INSPECTION_DIR / inspection_id
+    inspection_path.mkdir(parents=True, exist_ok=False)
+
+    saved_images = []
+    total_bytes = 0
+
+    try:
+        for index, uploaded_file in enumerate(files, start=1):
+            content = await uploaded_file.read(
+                MAX_FILE_SIZE + 1
+            )
+
+            if not content:
+                raise HTTPException(
+                    status_code=400,
+                    detail="An uploaded image is empty."
+                )
+
+            if len(content) > MAX_FILE_SIZE:
+                raise HTTPException(
+                    status_code=413,
+                    detail="Each image must be 10 MB or smaller."
+                )
+
+            # Verify that the content is actually a JPEG.
+            try:
+                with Image.open(io.BytesIO(content)) as image:
+                    if image.format != "JPEG":
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Only JPEG images are accepted."
+                        )
+
+                    image.verify()
+
+            except UnidentifiedImageError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="One of the files is not a valid image."
+                )
+
+            filename = f"view_{index:02d}.jpg"
+            destination = inspection_path / filename
+            destination.write_bytes(content)
+
+            total_bytes += len(content)
+
+            saved_images.append({
+                "filename": filename,
+                "size_bytes": len(content)
+            })
+
+        return {
+            "inspection_id": inspection_id,
+            "images_received": len(saved_images),
+            "total_size_bytes": total_bytes,
+            "status": "uploaded",
+            "images": saved_images
+        }
+
+    except Exception:
+        # Remove partial inspection data if any upload fails.
+        import shutil
+        shutil.rmtree(inspection_path, ignore_errors=True)
+        raise
+
+    finally:
+        for uploaded_file in files:
+            await uploaded_file.close()
+
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        routes=app.routes,
+    )
+
+    # Convert FastAPI's new file schema into
+    # the format Swagger UI expects.
+    schema["openapi"] = "3.0.3"
+
+    components = schema.get("components", {}).get("schemas", {})
+
+    for component in components.values():
+        for prop in component.get("properties", {}).values():
+
+            # Handle arrays of uploaded files.
+            if prop.get("type") == "array":
+                items = prop.get("items", {})
+
+                if items.get("contentMediaType") == "application/octet-stream":
+                    items.pop("contentMediaType", None)
+                    items["format"] = "binary"
+
+            # Handle a single uploaded file.
+            if prop.get("contentMediaType") == "application/octet-stream":
+                prop.pop("contentMediaType", None)
+                prop["format"] = "binary"
+
+    app.openapi_schema = schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
+
