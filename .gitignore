@@ -24,3 +24,13 @@ Thumbs.db
 .idea/data/inspections/
 
 /data/inspections/
+
+# Generated vehicle inspection uploads
+data/inspections/
+
+# Generated YOLO prediction outputs
+runs/
+
+# Downloaded damage detection model weights
+models/damage_detection/
+

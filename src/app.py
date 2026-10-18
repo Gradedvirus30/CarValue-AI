@@ -15,6 +15,9 @@ from PIL import Image, UnidentifiedImageError
 from typing import Annotated
 from fastapi.openapi.utils import get_openapi
 
+from src.damage_detector import analyze_image
+from src.conditioned_scoring import score_inspection
+
 
 df = clean_dataframe(
     pd.read_csv("data/cars.csv")
@@ -226,4 +229,73 @@ def custom_openapi():
     return app.openapi_schema
 
 app.openapi = custom_openapi
+
+
+@app.get("/inspection/{inspection_id}/analyze")
+def analyze_inspection(inspection_id: str):
+    inspection_path = INSPECTION_DIR / inspection_id
+
+    if not inspection_path.is_dir():
+        raise HTTPException(
+            status_code=404,
+            detail="Inspection not found.",
+        )
+
+    image_paths = sorted(inspection_path.glob("view_*.jpg"))
+
+    if not image_paths:
+        raise HTTPException(
+            status_code=404,
+            detail="No inspection images found.",
+        )
+
+    results = [
+        analyze_image(image_path)
+        for image_path in image_paths
+    ]
+
+    total_detections = sum(
+        result["detections_count"] for result in results
+    )
+
+    return {
+        "inspection_id": inspection_id,
+        "images_analyzed": len(results),
+        "total_detections": total_detections,
+        "results": results,
+    }
+
+
+@app.get("/inspection/{inspection_id}/score")
+def get_inspection_score(inspection_id: str):
+    inspection_path = INSPECTION_DIR / inspection_id
+
+    if not inspection_path.is_dir():
+        raise HTTPException(
+            status_code=404,
+            detail="Inspection not found.",
+        )
+
+    image_paths = sorted(inspection_path.glob("view_*.jpg"))
+
+    if not image_paths:
+        raise HTTPException(
+            status_code=404,
+            detail="No inspection images found.",
+        )
+
+    image_results = [
+        analyze_image(image_path)
+        for image_path in image_paths
+    ]
+
+    score_report = score_inspection(image_results)
+
+    return {
+        "inspection_id": inspection_id,
+        "images_analyzed": len(image_results),
+        "condition_report": score_report,
+    }
+
+
 
