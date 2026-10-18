@@ -17,6 +17,7 @@ from fastapi.openapi.utils import get_openapi
 
 from src.damage_detector import analyze_image
 from src.conditioned_scoring import score_inspection
+from src.predict import predict_price
 
 
 df = clean_dataframe(
@@ -296,6 +297,73 @@ def get_inspection_score(inspection_id: str):
         "images_analyzed": len(image_results),
         "condition_report": score_report,
     }
+
+
+@app.post("/inspection/{inspection_id}/report")
+def generate_inspection_report(
+    inspection_id: str,
+    car: CarInput,
+):
+    # Validate the inspection ID before accessing its folder.
+    if (
+        len(inspection_id) != 14
+        or not inspection_id.startswith("INS-")
+        or any(
+            char not in "0123456789ABCDEF"
+            for char in inspection_id[4:]
+        )
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid inspection ID.",
+        )
+
+    inspection_path = INSPECTION_DIR / inspection_id
+
+    if not inspection_path.is_dir():
+        raise HTTPException(
+            status_code=404,
+            detail="Inspection not found.",
+        )
+
+    image_paths = sorted(inspection_path.glob("view_*.jpg"))
+
+    if not image_paths:
+        raise HTTPException(
+            status_code=404,
+            detail="No inspection images found.",
+        )
+
+    # Run the pretrained damage detector on every image.
+    image_results = [
+        analyze_image(image_path)
+        for image_path in image_paths
+    ]
+
+    # Generate the experimental condition report.
+    condition_report = score_inspection(image_results)
+
+    # Get the existing CarValueAI base price estimate.
+    valuation = predict_price(car.dict())
+
+    return {
+        "inspection_id": inspection_id,
+        "images_analyzed": len(image_results),
+        "valuation": valuation,
+        "condition_report": condition_report,
+        "damage_analysis": {
+            "total_detections": sum(
+                result["detections_count"]
+                for result in image_results
+            ),
+            "results": image_results,
+        },
+        "pricing_note": (
+            "The condition score is experimental and does not "
+            "currently modify the predicted vehicle price."
+        ),
+    }
+
 
 
 
