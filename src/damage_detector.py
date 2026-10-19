@@ -1,8 +1,12 @@
 
 from pathlib import Path
 
+import torch
 from ultralytics import YOLO
 
+
+# Reduce CPU thread usage on memory-constrained deployment.
+torch.set_num_threads(1)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MODEL_PATH = PROJECT_ROOT / "models" / "damage_detection" / "best.pt"
@@ -19,7 +23,7 @@ def analyze_image(image_path: str | Path, confidence: float = 0.25):
 
     results = model.predict(
         source=str(image_path),
-        imgsz=640,
+        imgsz=416,  # Lower memory use than 640; may reduce detection accuracy.
         conf=confidence,
         device="cpu",
         save=False,
